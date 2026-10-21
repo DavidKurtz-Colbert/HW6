@@ -1,0 +1,362 @@
+import random
+import threading
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from queue import Queue
+
+
+ASSEMBLY_WORKERS = 5
+TESTING_WORKERS = 3
+PACKAGING_WORKERS = 2
+TRAY_CAPACITY = 13
+BOX_CAPACITY = 5
+FAILURE_RATE = 0.025
+@dataclass
+class Circuit:
+    circuit_id: int
+    components: tuple[str, ...] = (
+        "resistor",
+        "inductor",
+        "capacitor",
+        "voltage source",
+    )
+    inspector: str | None = None
+    _mark_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
+
+    def mark_inspected(self, inspector: str) -> None:
+        with self._mark_lock:
+            self.inspector = inspector
+
+    def get_inspector(self) -> str | None:
+        with self._mark_lock:
+            return self.inspector
+
+
+@dataclass(frozen=True)
+class Box:
+    inspector: str
+    box_number: int
+    circuits: tuple[Circuit, ...]
+
+
+class Factory:
+    def __init__(self) -> None:
+        self._assembly_condition = threading.Condition()
+        self._assembled: deque[Circuit] = deque()
+        self._expedite_targets: deque[int] = deque()
+        self._next_circuit_id = 1
+        self._tray: list[Circuit] = []
+
+        self._testing_queue: Queue[Circuit | None] = Queue()
+        self._good_circuits: Queue[Circuit | None] = Queue()
+        self._stop_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self._active = False
+        self._assembly_threads: list[threading.Thread] = []
+        self._testing_threads: list[threading.Thread] = []
+        self._packaging_threads: list[threading.Thread] = []
+        self._overseer_thread: threading.Thread | None = None
+
+        self._inventory_lock = threading.Lock()
+        self._inventory: dict[str, list[Box]] = defaultdict(list)
+
+    def begin(self) -> None:
+        with self._state_lock:
+            if self._active:
+                print("Production is already running.")
+                return
+            self._active = True
+
+        self._stop_event.clear()
+        with self._assembly_condition:
+            self._expedite_targets.clear()
+        self._assembly_threads = [
+            threading.Thread(
+                target=self._assembly_worker,
+                name=f"Assembler-{worker_number}",
+            )
+            for worker_number in range(1, ASSEMBLY_WORKERS + 1)
+        ]
+        self._testing_threads = [
+            threading.Thread(
+                target=self._testing_worker,
+                args=(worker_number,),
+                name=f"Inspector-{worker_number}",
+            )
+            for worker_number in range(1, TESTING_WORKERS + 1)
+        ]
+        self._overseer_thread = threading.Thread(
+            target=self._overseer, name="Assembly-Overseer"
+        )
+
+        for worker in self._testing_threads:
+            worker.start()
+        self._overseer_thread.start()
+        for worker in self._assembly_threads:
+            worker.start()
+
+        # Student C's packaging worker is implemented below, but remains disabled.
+        # Uncomment these calls when the packaging stage is ready to run:
+        # self._start_packagers()
+
+        print("Production started.")
+
+    def halt(self) -> None:
+        with self._state_lock:
+            if not self._active:
+                print("Production is not running.")
+                return
+            self._active = False
+
+        self._stop_event.set()
+        for worker in self._assembly_threads:
+            worker.join()
+
+        with self._assembly_condition:
+            self._assembly_condition.notify_all()
+
+        # The overseer flushes the partial assembly tray before it exits.
+        if self._overseer_thread is not None:
+            self._overseer_thread.join()
+
+        for _ in self._testing_threads:
+            self._testing_queue.put(None)
+        for worker in self._testing_threads:
+            worker.join()
+
+        # Uncomment with _start_packagers() above to enable Student C's stage.
+        # self._stop_packagers()
+        print("Production halted; all assembled circuits have been tested.")
+
+    def inventory_report(self) -> None:
+        with self._inventory_lock:
+            inventory = {
+                inspector: tuple(boxes)
+                for inspector, boxes in self._inventory.items()
+            }
+
+        if not inventory:
+            print("No boxed circuits are in inventory.")
+            return
+
+        for inspector in sorted(inventory):
+            boxes = inventory[inspector]
+            print(f"{inspector}: {len(boxes)} box(es)")
+            for box in boxes:
+                board_ids = ", ".join(
+                    str(circuit.circuit_id) for circuit in box.circuits
+                )
+                print(f"  Box {box.box_number}: circuits {board_ids}")
+
+    def spotcheck(
+        self, inspector: str, box_number: int, board_number: int
+    ) -> None:
+        with self._inventory_lock:
+            boxes = self._inventory.get(inspector, [])
+            box = next(
+                (item for item in boxes if item.box_number == box_number), None
+            )
+            if box is None:
+                print(f"No box {box_number} for inspector {inspector}.")
+                return
+            if not 1 <= board_number <= len(box.circuits):
+                print(
+                    f"Board number must be between 1 and {len(box.circuits)}."
+                )
+                return
+            circuit = box.circuits[board_number - 1]
+
+        marked_inspector = circuit.get_inspector()
+        if marked_inspector == inspector:
+            print(
+                f"Spotcheck passed: circuit {circuit.circuit_id} is marked "
+                f"{marked_inspector}."
+            )
+        else:
+            print(
+                f"Spotcheck failed: expected {inspector}, found "
+                f"{marked_inspector or 'no inspector mark'}."
+            )
+
+    def _assembly_worker(self) -> None:
+        while not self._stop_event.is_set():
+            assembly_time = max(0.01, random.gauss(11, 2))
+            if self._stop_event.wait(assembly_time):
+                break
+
+            with self._assembly_condition:
+                circuit = Circuit(self._next_circuit_id)
+                self._next_circuit_id += 1
+                self._assembled.append(circuit)
+                self._assembly_condition.notify()
+
+    def _overseer(self) -> None:
+        while True:
+            with self._assembly_condition:
+                while not self._assembled and not self._stop_event.is_set():
+                    self._assembly_condition.wait()
+
+                if not self._assembled:
+                    if self._stop_event.is_set():
+                        if self._tray:
+                            for circuit in self._tray:
+                                self._testing_queue.put(circuit)
+                            self._tray = []
+                        return
+                    continue
+
+                circuit = self._assembled.popleft()
+                expedited = bool(
+                    self._expedite_targets
+                    and self._expedite_targets[0] <= circuit.circuit_id
+                )
+                if expedited:
+                    self._expedite_targets.popleft()
+                    if (
+                        self._expedite_targets
+                        and self._expedite_targets[0] <= circuit.circuit_id
+                    ):
+                        self._expedite_targets[0] = circuit.circuit_id + 1
+
+                if not expedited:
+                    self._tray.append(circuit)
+                    if len(self._tray) < TRAY_CAPACITY:
+                        continue
+                    tray = self._tray
+                    self._tray = []
+                else:
+                    tray = [circuit]
+
+            for circuit in tray:
+                self._testing_queue.put(circuit)
+
+    def _request_expedited_circuit(self) -> None:
+        with self._assembly_condition:
+            self._expedite_targets.append(self._next_circuit_id)
+            self._assembly_condition.notify()
+
+    def _testing_worker(self, worker_number: int) -> None:
+        inspector = f"Inspector-{worker_number}"
+        while True:
+            work = self._testing_queue.get()
+            if work is None:
+                self._testing_queue.task_done()
+                return
+
+            circuit = work
+            test_time = max(0.01, random.gauss(6, 1))
+            # Halt interrupts the simulated delay while still draining work.
+            self._stop_event.wait(test_time)
+
+            if random.random() < FAILURE_RATE:
+                self._request_expedited_circuit()
+            else:
+                circuit.mark_inspected(inspector)
+                self._good_circuits.put(circuit)
+
+            self._testing_queue.task_done()
+
+    def _packager_worker(self) -> None:
+        circuits_by_inspector: dict[str, list[Circuit]] = defaultdict(list)
+        while True:
+            work = self._good_circuits.get()
+            if work is None:
+                self._good_circuits.task_done()
+                return
+
+            circuit = work
+            inspector = circuit.get_inspector()
+            if inspector is None:
+                self._good_circuits.task_done()
+                raise RuntimeError(
+                    f"Circuit {circuit.circuit_id} has no inspector mark."
+                )
+
+            inspector_circuits = circuits_by_inspector[inspector]
+            inspector_circuits.append(circuit)
+            if len(inspector_circuits) == BOX_CAPACITY:
+                boxed_circuits = tuple(inspector_circuits)
+                with self._inventory_lock:
+                    box_number = len(self._inventory[inspector]) + 1
+                    self._inventory[inspector].append(
+                        Box(inspector, box_number, boxed_circuits)
+                    )
+                circuits_by_inspector[inspector] = []
+
+            self._good_circuits.task_done()
+
+    def _start_packagers(self) -> None:
+        self._packaging_threads = [
+            threading.Thread(
+                target=self._packager_worker,
+                name=f"Packager-{worker_number}",
+            )
+            for worker_number in range(1, PACKAGING_WORKERS + 1)
+        ]
+        for worker in self._packaging_threads:
+            worker.start()
+
+    def _stop_packagers(self) -> None:
+        for _ in self._packaging_threads:
+            self._good_circuits.put(None)
+        for worker in self._packaging_threads:
+            worker.join()
+
+
+def main() -> None:
+    factory = Factory()
+    print(
+        "Commands: begin, halt, inventory, spotcheck, "
+        "spotcheck <inspector> <box> <board>, exit"
+    )
+
+    while True:
+        try:
+            command_line = input("> ").strip()
+        except EOFError:
+            if factory._active:
+                factory.halt()
+            print()
+            return
+
+        if not command_line:
+            continue
+
+        command, *arguments = command_line.split()
+        command = command.lower()
+
+        if command == "begin":
+            factory.begin()
+        elif command == "halt":
+            factory.halt()
+        elif command == "inventory":
+            factory.inventory_report()
+        elif command == "spotcheck":
+            if not arguments:
+                inspector = input("Inspector name: ").strip()
+                box_input = input("Box number: ").strip()
+                board_input = input("Board number: ").strip()
+            elif len(arguments) == 3:
+                inspector, box_input, board_input = arguments
+            else:
+                print(
+                    "Usage: spotcheck <inspector> <box number> <board number>"
+                )
+                continue
+
+            try:
+                factory.spotcheck(inspector, int(box_input), int(board_input))
+            except ValueError:
+                print("Box and board numbers must be integers.")
+        elif command == "exit":
+            if factory._active:
+                factory.halt()
+            return
+        else:
+            print("Unknown command. Enter begin, halt, inventory, spotcheck, or exit.")
+
+
+if __name__ == "__main__":
+    main()
