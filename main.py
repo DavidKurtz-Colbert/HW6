@@ -25,6 +25,7 @@ class Circuit:
     _mark_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False
     )
+    assembler: str = "Unknown"
 
     def mark_inspected(self, inspector: str) -> None:
         with self._mark_lock:
@@ -66,6 +67,7 @@ class Factory:
         self._metrics_lock = threading.Lock()
         self._good_circuits_count = 0
         self._bad_circuits_count = 0
+        self._bad_circuits: list[tuple[int, str]] = []
         self._production_time_total = 0.0
         self._production_time_count = 0
         self._testing_time_total = 0.0
@@ -91,6 +93,7 @@ class Factory:
         self._assembly_threads = [
             threading.Thread(
                 target=self._assembly_worker,
+                args=(worker_number,),
                 name=f"Assembler-{worker_number}",
             )
             for worker_number in range(1, ASSEMBLY_WORKERS + 1)
@@ -189,6 +192,7 @@ class Factory:
         with self._metrics_lock:
             good_circuits = self._good_circuits_count
             bad_circuits = self._bad_circuits_count
+            bad_circuits_detail = tuple(self._bad_circuits)
             production_time_total = self._production_time_total
             production_time_count = self._production_time_count
             testing_time_total = self._testing_time_total
@@ -199,6 +203,12 @@ class Factory:
         print("Production report")
         print(f"Total good circuits: {good_circuits}")
         print(f"Total bad circuits: {bad_circuits}")
+        print("Bad circuits and assembly workers:")
+        if bad_circuits_detail:
+            for circuit_id, assembler in bad_circuits_detail:
+                print(f"Circuit {circuit_id}: {assembler}")
+        else:
+            print("None")
         if (
             production_time_count
             and testing_time_count
@@ -253,7 +263,7 @@ class Factory:
                 f"{marked_inspector or 'no inspector mark'}."
             )
 
-    def _assembly_worker(self) -> None:
+    def _assembly_worker(self, worker_number: int) -> None:
         while not self._stop_event.is_set():
             started_at = time.perf_counter()
             assembly_time = max(0.01, random.gauss(11, 2))
@@ -262,7 +272,10 @@ class Factory:
             elapsed = time.perf_counter() - started_at
 
             with self._assembly_condition:
-                circuit = Circuit(self._next_circuit_id)
+                circuit = Circuit(
+                    self._next_circuit_id,
+                    assembler=f"Assembler-{worker_number}",
+                )
                 self._next_circuit_id += 1
                 self._assembled.append(circuit)
                 self._assembly_condition.notify()
@@ -339,6 +352,9 @@ class Factory:
             with self._metrics_lock:
                 if failed:
                     self._bad_circuits_count += 1
+                    self._bad_circuits.append(
+                        (circuit.circuit_id, circuit.assembler)
+                    )
                 else:
                     self._good_circuits_count += 1
                     self._good_circuits.put(circuit)

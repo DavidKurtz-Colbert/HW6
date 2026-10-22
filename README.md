@@ -13,8 +13,9 @@ python main.py
 Enter `begin` to start the five assembly workers, assembly overseer, and three
 testing workers. Enter `halt` to stop production and finish testing circuits
 already assembled. `inventory` prints the boxed-circuit inventory;
-`report` prints cumulative good and bad circuit totals and the combined average
-time to produce, test, and package a circuit;
+`report` prints cumulative good and bad circuit totals, the circuit IDs and
+assembly workers for failed circuits, and the combined average time to produce,
+test, and package a circuit;
 `spotcheck` prompts for an inspector, box number, and circuit ID. You can also
 provide those values on one line, for example `spotcheck Inspector-1 1 3`;
 use a circuit ID listed by `inventory`. Enter `exit` to stop and close the
