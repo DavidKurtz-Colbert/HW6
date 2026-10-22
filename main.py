@@ -153,7 +153,7 @@ class Factory:
                 print(f"  Box {box.box_number}: circuits {board_ids}")
 
     def spotcheck(
-        self, inspector: str, box_number: int, board_number: int
+        self, inspector: str, box_number: int, circuit_id: int
     ) -> None:
         with self._inventory_lock:
             boxes = self._inventory.get(inspector, [])
@@ -163,12 +163,13 @@ class Factory:
             if box is None:
                 print(f"No box {box_number} for inspector {inspector}.")
                 return
-            if not 1 <= board_number <= len(box.circuits):
-                print(
-                    f"Board number must be between 1 and {len(box.circuits)}."
-                )
+            circuit = next(
+                (item for item in box.circuits if item.circuit_id == circuit_id),
+                None,
+            )
+            if circuit is None:
+                print(f"Circuit {circuit_id} is not in box {box_number}.")
                 return
-            circuit = box.circuits[board_number - 1]
 
         marked_inspector = circuit.get_inspector()
         if marked_inspector == inspector:
@@ -311,7 +312,7 @@ def main() -> None:
     factory = Factory()
     print(
         "Commands: begin, halt, inventory, spotcheck, "
-        "spotcheck <inspector> <box> <board>, exit"
+        "spotcheck <inspector> <box> <circuit ID>, exit"
     )
 
     while True:
@@ -339,19 +340,19 @@ def main() -> None:
             if not arguments:
                 inspector = input("Inspector name: ").strip()
                 box_input = input("Box number: ").strip()
-                board_input = input("Board number: ").strip()
+                circuit_input = input("Circuit ID: ").strip()
             elif len(arguments) == 3:
-                inspector, box_input, board_input = arguments
+                inspector, box_input, circuit_input = arguments
             else:
                 print(
-                    "Usage: spotcheck <inspector> <box number> <board number>"
+                    "Usage: spotcheck <inspector> <box number> <circuit ID>"
                 )
                 continue
 
             try:
-                factory.spotcheck(inspector, int(box_input), int(board_input))
+                factory.spotcheck(inspector, int(box_input), int(circuit_input))
             except ValueError:
-                print("Box and board numbers must be integers.")
+                print("Box number and circuit ID must be integers.")
         elif command == "exit":
             if factory.is_active:
                 factory.halt()
