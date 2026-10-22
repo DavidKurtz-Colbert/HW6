@@ -1,5 +1,6 @@
 import random
 import threading
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from queue import Queue
@@ -61,6 +62,16 @@ class Factory:
 
         self._inventory_lock = threading.Lock()
         self._inventory: dict[str, list[Box]] = defaultdict(list)
+
+        self._metrics_lock = threading.Lock()
+        self._good_circuits_count = 0
+        self._bad_circuits_count = 0
+        self._production_time_total = 0.0
+        self._production_time_count = 0
+        self._testing_time_total = 0.0
+        self._testing_time_count = 0
+        self._packaging_time_total = 0.0
+        self._packaging_time_count = 0
 
     @property
     def is_active(self) -> bool:
@@ -143,14 +154,68 @@ class Factory:
             print("No boxed circuits are in inventory.")
             return
 
-        for inspector in sorted(inventory):
-            boxes = inventory[inspector]
-            print(f"{inspector}: {len(boxes)} box(es)")
-            for box in boxes:
+        inspectors = ("Inspector-1", "Inspector-2", "Inspector-3")
+        columns: list[list[str]] = []
+        for inspector in inspectors:
+            cells: list[str] = []
+            for box in inventory.get(inspector, ()):
                 board_ids = ", ".join(
                     str(circuit.circuit_id) for circuit in box.circuits
                 )
-                print(f"  Box {box.box_number}: circuits {board_ids}")
+                cells.append(f"Box {box.box_number}: circuits {board_ids}")
+            columns.append(cells)
+
+        widths = [
+            max([len(inspector), *(len(cell) for cell in cells)])
+            for inspector, cells in zip(inspectors, columns)
+        ]
+        print(
+            " | ".join(
+                inspector.ljust(width)
+                for inspector, width in zip(inspectors, widths)
+            )
+        )
+        print("-+-".join("-" * width for width in widths))
+
+        for row in range(max(map(len, columns), default=0)):
+            print(
+                " | ".join(
+                    (cells[row] if row < len(cells) else "").ljust(width)
+                    for cells, width in zip(columns, widths)
+                )
+            )
+
+    def report(self) -> None:
+        with self._metrics_lock:
+            good_circuits = self._good_circuits_count
+            bad_circuits = self._bad_circuits_count
+            production_time_total = self._production_time_total
+            production_time_count = self._production_time_count
+            testing_time_total = self._testing_time_total
+            testing_time_count = self._testing_time_count
+            packaging_time_total = self._packaging_time_total
+            packaging_time_count = self._packaging_time_count
+
+        def average(total: float, count: int) -> str:
+            if not count:
+                return "N/A (no circuits)"
+            return f"{total / count:.6f} seconds"
+
+        print("Production report")
+        print(f"Total good circuits: {good_circuits}")
+        print(f"Total bad circuits: {bad_circuits}")
+        print(
+            "Average time to produce: "
+            f"{average(production_time_total, production_time_count)}"
+        )
+        print(
+            "Average time to test: "
+            f"{average(testing_time_total, testing_time_count)}"
+        )
+        print(
+            "Average time to package: "
+            f"{average(packaging_time_total, packaging_time_count)}"
+        )
 
     def spotcheck(
         self, inspector: str, box_number: int, circuit_id: int
@@ -188,15 +253,20 @@ class Factory:
 
     def _assembly_worker(self) -> None:
         while not self._stop_event.is_set():
+            started_at = time.perf_counter()
             assembly_time = max(0.01, random.gauss(11, 2))
             if self._stop_event.wait(assembly_time):
                 break
+            elapsed = time.perf_counter() - started_at
 
             with self._assembly_condition:
                 circuit = Circuit(self._next_circuit_id)
                 self._next_circuit_id += 1
                 self._assembled.append(circuit)
                 self._assembly_condition.notify()
+            with self._metrics_lock:
+                self._production_time_total += elapsed
+                self._production_time_count += 1
 
     def _overseer(self) -> None:
         while True:
@@ -252,15 +322,26 @@ class Factory:
                 return
 
             circuit = work
+            started_at = time.perf_counter()
             test_time = max(0.01, random.gauss(6, 1))
             # Halt interrupts the simulated delay while still draining work.
             self._stop_event.wait(test_time)
+            elapsed = time.perf_counter() - started_at
 
-            if random.random() < FAILURE_RATE:
+            failed = random.random() < FAILURE_RATE
+            if failed:
                 self._request_expedited_circuit()
             else:
                 circuit.mark_inspected(inspector)
-                self._good_circuits.put(circuit)
+
+            with self._metrics_lock:
+                if failed:
+                    self._bad_circuits_count += 1
+                else:
+                    self._good_circuits_count += 1
+                    self._good_circuits.put(circuit)
+                self._testing_time_total += elapsed
+                self._testing_time_count += 1
 
             self._testing_queue.task_done()
 
@@ -280,6 +361,7 @@ class Factory:
                     f"Circuit {circuit.circuit_id} has no inspector mark."
                 )
 
+            started_at = time.perf_counter()
             inspector_circuits = circuits_by_inspector[inspector]
             inspector_circuits.append(circuit)
             if len(inspector_circuits) == BOX_CAPACITY:
@@ -290,6 +372,10 @@ class Factory:
                         Box(inspector, box_number, boxed_circuits)
                     )
                 circuits_by_inspector[inspector] = []
+            elapsed = time.perf_counter() - started_at
+            with self._metrics_lock:
+                self._packaging_time_total += elapsed
+                self._packaging_time_count += 1
 
             self._good_circuits.task_done()
 
@@ -314,7 +400,7 @@ class Factory:
 def main() -> None:
     factory = Factory()
     print(
-        "Commands: begin, halt, inventory, spotcheck, "
+        "Commands: begin, halt, inventory, report, spotcheck, "
         "spotcheck <inspector> <box> <circuit ID>, exit"
     )
 
@@ -339,6 +425,8 @@ def main() -> None:
             factory.halt()
         elif command == "inventory":
             factory.inventory_report()
+        elif command == "report":
+            factory.report()
         elif command == "spotcheck":
             if not arguments:
                 inspector = input("Inspector name: ").strip()
