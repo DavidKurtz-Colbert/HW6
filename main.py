@@ -155,13 +155,16 @@ class Factory:
     def spotcheck(
         self, inspector: str, box_number: int, circuit_id: int
     ) -> None:
+        inspector_name = (
+            f"Inspector-{inspector}" if inspector.isdecimal() else inspector
+        )
         with self._inventory_lock:
-            boxes = self._inventory.get(inspector, [])
+            boxes = self._inventory.get(inspector_name, [])
             box = next(
                 (item for item in boxes if item.box_number == box_number), None
             )
             if box is None:
-                print(f"No box {box_number} for inspector {inspector}.")
+                print(f"No box {box_number} for inspector {inspector_name}.")
                 return
             circuit = next(
                 (item for item in box.circuits if item.circuit_id == circuit_id),
@@ -172,14 +175,14 @@ class Factory:
                 return
 
         marked_inspector = circuit.get_inspector()
-        if marked_inspector == inspector:
+        if marked_inspector == inspector_name:
             print(
                 f"Spotcheck passed: circuit {circuit.circuit_id} is marked "
                 f"{marked_inspector}."
             )
         else:
             print(
-                f"Spotcheck failed: expected {inspector}, found "
+                f"Spotcheck failed: expected {inspector_name}, found "
                 f"{marked_inspector or 'no inspector mark'}."
             )
 
