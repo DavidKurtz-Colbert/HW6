@@ -196,26 +196,28 @@ class Factory:
             packaging_time_total = self._packaging_time_total
             packaging_time_count = self._packaging_time_count
 
-        def average(total: float, count: int) -> str:
-            if not count:
-                return "N/A (no circuits)"
-            return f"{total / count:.6f} seconds"
-
         print("Production report")
         print(f"Total good circuits: {good_circuits}")
         print(f"Total bad circuits: {bad_circuits}")
-        print(
-            "Average time to produce: "
-            f"{average(production_time_total, production_time_count)}"
-        )
-        print(
-            "Average time to test: "
-            f"{average(testing_time_total, testing_time_count)}"
-        )
-        print(
-            "Average time to package: "
-            f"{average(packaging_time_total, packaging_time_count)}"
-        )
+        if (
+            production_time_count
+            and testing_time_count
+            and packaging_time_count
+        ):
+            combined_average = (
+                production_time_total / production_time_count
+                + testing_time_total / testing_time_count
+                + packaging_time_total / packaging_time_count
+            )
+            print(
+                "Average combined time (produce, test, and package): "
+                f"{combined_average:.6f} seconds"
+            )
+        else:
+            print(
+                "Average combined time (produce, test, and package): "
+                "N/A (no completed circuits)"
+            )
 
     def spotcheck(
         self, inspector: str, box_number: int, circuit_id: int
