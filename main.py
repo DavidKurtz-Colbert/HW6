@@ -62,6 +62,11 @@ class Factory:
         self._inventory_lock = threading.Lock()
         self._inventory: dict[str, list[Box]] = defaultdict(list)
 
+    @property
+    def is_active(self) -> bool:
+        with self._state_lock:
+            return self._active
+
     def begin(self) -> None:
         with self._state_lock:
             if self._active:
@@ -97,9 +102,7 @@ class Factory:
         for worker in self._assembly_threads:
             worker.start()
 
-        # Student C's packaging worker is implemented below, but remains disabled.
-        # Uncomment these calls when the packaging stage is ready to run:
-        # self._start_packagers()
+        self._start_packagers()
 
         print("Production started.")
 
@@ -126,8 +129,7 @@ class Factory:
         for worker in self._testing_threads:
             worker.join()
 
-        # Uncomment with _start_packagers() above to enable Student C's stage.
-        # self._stop_packagers()
+        self._stop_packagers()
         print("Production halted; all assembled circuits have been tested.")
 
     def inventory_report(self) -> None:
@@ -316,7 +318,7 @@ def main() -> None:
         try:
             command_line = input("> ").strip()
         except EOFError:
-            if factory._active:
+            if factory.is_active:
                 factory.halt()
             print()
             return
@@ -351,7 +353,7 @@ def main() -> None:
             except ValueError:
                 print("Box and board numbers must be integers.")
         elif command == "exit":
-            if factory._active:
+            if factory.is_active:
                 factory.halt()
             return
         else:

@@ -17,7 +17,6 @@ already assembled. `inventory` prints the boxed-circuit inventory;
 also provide those values on one line, for example
 `spotcheck Inspector-1 1 3`. Enter `exit` to stop and close the simulation.
 
-Assembly, testing, and synchronization for inspector marks are active. The
-packaging worker implementation is included, but its startup and shutdown calls
-are commented out as requested for Student C's work. Consequently, the inventory
-remains empty until that stage is enabled.
+Assembly, testing, packaging, and synchronization for inspector marks are
+active. Packaging workers group passing circuits by inspector into boxes of
+five; partial boxes remain unboxed when production halts.
