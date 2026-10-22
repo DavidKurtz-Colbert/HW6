@@ -211,7 +211,7 @@ class Factory:
             )
             print(
                 "Average combined time (produce, test, and package): "
-                f"{combined_average:.6f} seconds"
+                f"{combined_average:.2f} seconds"
             )
         else:
             print(
